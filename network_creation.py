@@ -4,6 +4,10 @@ from collections import defaultdict
 from itertools import combinations
 from matplotlib import pyplot as plt
 import unicodedata
+import simplejson as json
+from datetime import *
+import re
+from community import community
 
 # An important arbitrary constant is the upper bound of participation artist
 # We certainly don't want to add connection for every artist participating in SXSW
@@ -15,7 +19,9 @@ MAX_ARTIST = 10
 # The minimum strength of connection to be added as edge
 STRENGTH_THRESHOLD = 1
 
-def create_artist_network(start_year, end_year, write=False):
+def create_artist_network(start_year, end_year, lastfm, wiki, write=False):
+    
+    valid_artists = set(lastfm.keys())&set(wiki.keys())
     
     con = lite.connect("lastfmDB.db")
     cur = con.cursor()
@@ -72,26 +78,106 @@ def create_artist_network(start_year, end_year, write=False):
     for (a, b), strength in artist_connections.iteritems():
         a = unicodedata.normalize('NFKD', a).encode('ASCII', 'ignore')
         b = unicodedata.normalize('NFKD', b).encode('ASCII', 'ignore')
-        
-        # Filter by strength
-        if strength> STRENGTH_THRESHOLD:
-            G.add_edge(a, b, weight = 1/strength)
+        if a in valid_artists and b in valid_artists:
+            # Filter by strength
+            if strength> STRENGTH_THRESHOLD:
+                G.add_edge(a, b, weight = 1/strength)
+    
+    G = nx.connected_component_subgraphs(G)[0]   
+    
     print "###################"
     print "Nodes:", len(G.nodes())
     print "Edges:", len(G.edges())
     
     if write:
         print "#############\nWriting gml file"
-        nx.write_gml(G, 'artist_collaboration.gml')
+        nx.write_gml(G, 'artist_collaboration_new.gml')
         
     return G
     #nx.draw(G)
     #plt.draw()
     #import ipdb; ipdb.set_trace()
 
+def add_attributes(lastfm, wiki):
+    g = nx.read_gml('artist_collaboration_new.gml')
+    print "read gml, start to add attributes"
+    for n in g.nodes():
+        node = g.node[n]
+        artist = node['label']
+        #print artist
+        
+        try:
+            years_active = wiki[artist]['Years active']
+            
+            years = re.findall(r'.*(\d\d\d\d).*', years_active)
+            start = min(years)
+            if years_active.find('present'):
+                end = datetime.now().year 
+            else:
+                end = max(years)
+            #years_active = wiki[artist]['Years active'].encode('UTF-8').replace('\xe2\x80\x93',',').replace('-',',') 
+            #start, end = years_active.split(',')[0], years_active.split(',')[-1]
+            #start = start.strip('s').strip(' ')
+            #end = end.strip(' ')
+            #if end == 'present':
+            #    end = datetime.now().year 
+            num_years_active = int(end) - int(start)
+        except:
+            num_years_active = 0
+        
+        try:
+            state, country = wiki[artist]['Born'].split(',')[-2:] 
+            state = unicodedata.normalize('NFKD', state).encode('ASCII', 'ignore').strip(' ')
+            country = unicodedata.normalize('NFKD', country).encode('ASCII', 'ignore').strip(' ')
+        except:
+            state, country = "",""
+        try:
+            listeners = int(lastfm[artist]['artist']['stats']['listeners']  )
+            playcount = int(lastfm[artist]['artist']['stats']['playcount']  )
+        except:
+            listeners, playcount = 0, 0
+        node['num_years_active'] = num_years_active
+        #node['state'] = state
+        #node['country'] = country
+        node['listeners'] = listeners
+        node['playcount'] = playcount
+        
+    nx.write_gml(g, 'artist_collaboration_with_attr.gml')
+    print 'complete'
+    
+
 def main():
-    g = create_artist_network(2000, 2013, write=False)
-    import ipdb; ipdb.set_trace()
+    
+    lastfm = {}
+    wiki = {}
+    
+    with open('artists_json_lastfm.txt','rb') as h:
+        for line in h:
+            try:
+                artist, json_str = line.strip().split('\t')
+                lastfm[artist] = json.loads(json_str)
+            except:
+                print line
+    print "Got lastfm info"
+          
+    with open('artists_json_wiki.txt','rb') as h:
+        for line in h:
+            artist, json_str = line.strip().split('\t')
+            wiki[artist] = json.loads(json_str)
+    print "got wiki info"
+            
+    
+    g = create_artist_network(2000, 2013, lastfm, wiki, write=True)
+    
+    add_attributes(lastfm, wiki)
+    
+    """
+    for i in g.nodes():
+        print i
+        with open("artists.txt", 'a') as h:
+            h.write(g.node[i]['label']+'\n')
+            """
+    #import ipdb; ipdb.set_trace()
 
 if __name__ == "__main__":
     main()
